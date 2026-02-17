@@ -647,8 +647,16 @@
                 'input.flac',
                 '-map',
                 '0:a',
+                '-map',
+                '0:v?',
                 '-acodec',
                 'alac',
+                '-c:v',
+                'copy',
+                '-disposition:v',
+                'attached_pic',
+                '-map_metadata',
+                '0',
                 'output.m4a',
               ]);
 
