@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>iPod Transcode & Folder Sync</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+      background: #f5f5f7;
+      color: #1d1d1f;
+    }
+
+    h1 { margin-bottom: 24px; font-size: 1.5rem; }
+
+    .folder-pickers {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .folder-picker {
+      flex: 1;
+      padding: 16px;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .folder-picker button {
+      width: 100%;
+      padding: 10px 16px;
+      font-size: 0.9rem;
+      border: none;
+      border-radius: 8px;
+      background: #0071e3;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    .folder-picker button:hover { background: #0077ed; }
+
+    .folder-picker .folder-name {
+      margin-top: 8px;
+      font-size: 0.85rem;
+      color: #6e6e73;
+      min-height: 1.2em;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .actions button {
+      padding: 10px 20px;
+      font-size: 0.9rem;
+      border: none;
+      border-radius: 8px;
+      background: #34c759;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    .actions button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .actions button:not(:disabled):hover { background: #30b350; }
+
+    .select-controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    .select-controls button {
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      background: #e5e5ea;
+      color: #1d1d1f;
+    }
+
+    .select-controls button:hover { background: #d1d1d6; }
+
+    #progress-area {
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      display: none;
+    }
+
+    #progress-area .bar-container {
+      width: 100%;
+      height: 8px;
+      background: #e5e5ea;
+      border-radius: 4px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+
+    #progress-area .bar-fill {
+      height: 100%;
+      width: 0%;
+      background: #0071e3;
+      border-radius: 4px;
+      transition: width 0.2s;
+    }
+
+    #progress-text { font-size: 0.85rem; color: #6e6e73; }
+
+    .album-list {
+      list-style: none;
+    }
+
+    .album-list li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: #fff;
+      margin-bottom: 2px;
+      font-size: 0.9rem;
+    }
+
+    .album-list li:first-child { border-radius: 12px 12px 0 0; }
+    .album-list li:last-child { border-radius: 0 0 12px 12px; }
+    .album-list li:only-child { border-radius: 12px; }
+
+    .album-list li.present { color: #6e6e73; }
+
+    .album-name { flex: 1; }
+
+    .album-meta {
+      font-size: 0.8rem;
+      color: #86868b;
+      white-space: nowrap;
+    }
+
+    .badge {
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    .badge.missing { background: #fff3cd; color: #856404; }
+    .badge.incomplete { background: #ffe0cc; color: #984c0c; }
+    .badge.present { background: #d4edda; color: #155724; }
+    .badge.synced { background: #d4edda; color: #155724; }
+
+    .empty-state {
+      text-align: center;
+      color: #86868b;
+      padding: 48px 16px;
+    }
+
+    #error-notice {
+      display: none;
+      padding: 10px 16px;
+      margin-bottom: 16px;
+      background: #f8d7da;
+      color: #721c24;
+      border-radius: 12px;
+      font-size: 0.9rem;
+    }
+
+    #sync-log {
+      margin-top: 16px;
+      display: none;
+    }
+
+    #sync-log summary {
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: #6e6e73;
+      padding: 8px 0;
+    }
+
+    #sync-log pre {
+      max-height: 400px;
+      overflow: auto;
+      padding: 12px;
+      background: #1d1d1f;
+      color: #e0e0e0;
+      border-radius: 8px;
+      font-size: 0.75rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <h1>iPod Transcode &amp; Folder Sync</h1>
+
+  <div class="folder-pickers">
+    <div class="folder-picker">
+      <button id="btn-source">Select Source Folder</button>
+      <div class="folder-name" id="source-name"></div>
+    </div>
+    <div class="folder-picker">
+      <button id="btn-target">Select Target (iPod) Folder</button>
+      <div class="folder-name" id="target-name"></div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="btn-sync" disabled>Sync Selected</button>
+    <div class="select-controls">
+      <button id="btn-select-all">Select All Missing</button>
+      <button id="btn-select-none">Select None</button>
+    </div>
+  </div>
+
+  <div id="progress-area">
+    <div id="progress-text"></div>
+    <div class="bar-container"><div class="bar-fill" id="progress-bar"></div></div>
+  </div>
+
+  <div id="error-notice"></div>
+
+  <ul class="album-list" id="album-list"></ul>
+  <div class="empty-state" id="empty-state">Select source and target folders to compare.</div>
+
+  <details id="sync-log">
+    <summary>Sync log</summary>
+    <pre id="sync-log-content"></pre>
+  </details>
+
+  <script type="module">
+    import { FFmpeg } from "@ffmpeg/ffmpeg";
+    import { toBlobURL, fetchFile } from "@ffmpeg/util";
+
+    const AUDIO_EXTS = new Set([".flac", ".m4a", ".mp3", ".aac", ".aiff", ".wav", ".alac"]);
+
+    // State
+    let sourceHandle = null;
+    let targetHandle = null;
+    let sourceAlbums = [];
+    let targetAlbumCounts = new Map(); // normalizedName → track count
+    let comparisonResults = []; // { name, normalizedName, files, status: 'missing'|'present' }
+
+    // DOM
+    const btnSource = document.getElementById("btn-source");
+    const btnTarget = document.getElementById("btn-target");
+    const btnSync = document.getElementById("btn-sync");
+    const btnSelectAll = document.getElementById("btn-select-all");
+    const btnSelectNone = document.getElementById("btn-select-none");
+    const sourceName = document.getElementById("source-name");
+    const targetName = document.getElementById("target-name");
+    const albumListEl = document.getElementById("album-list");
+    const emptyState = document.getElementById("empty-state");
+    const progressArea = document.getElementById("progress-area");
+    const progressText = document.getElementById("progress-text");
+    const progressBar = document.getElementById("progress-bar");
+    const errorNotice = document.getElementById("error-notice");
+    const syncLog = document.getElementById("sync-log");
+    const syncLogContent = document.getElementById("sync-log-content");
+
+    function normalize(name) {
+      return name.trim().toLowerCase();
+    }
+
+    function ext(filename) {
+      const i = filename.lastIndexOf(".");
+      return i >= 0 ? filename.slice(i).toLowerCase() : "";
+    }
+
+    async function scanFolder(dirHandle) {
+      const albums = [];
+      for await (const [name, handle] of dirHandle.entries()) {
+        if (handle.kind !== "directory") continue;
+        const files = [];
+        for await (const [fname, fhandle] of handle.entries()) {
+          if (fhandle.kind === "file" && AUDIO_EXTS.has(ext(fname))) {
+            files.push(fhandle);
+          }
+        }
+        if (files.length > 0) {
+          albums.push({ name, normalizedName: normalize(name), files });
+        }
+      }
+      albums.sort((a, b) => a.name.localeCompare(b.name));
+      return albums;
+    }
+
+    async function pickFolder(label) {
+      try {
+        return await window.showDirectoryPicker({ id: label, mode: "readwrite" });
+      } catch {
+        return null;
+      }
+    }
+
+    function compare() {
+      comparisonResults = sourceAlbums.map((album) => {
+        const targetCount = targetAlbumCounts.get(album.normalizedName);
+        const sourceCount = album.files.length;
+        let status;
+        if (targetCount == null) {
+          status = "missing";
+        } else if (targetCount < sourceCount) {
+          status = "incomplete";
+        } else {
+          status = "present";
+        }
+        return { ...album, status, targetCount: targetCount ?? 0 };
+      });
+      render();
+    }
+
+    function render() {
+      albumListEl.innerHTML = "";
+      if (comparisonResults.length === 0) {
+        emptyState.style.display = "block";
+        btnSync.disabled = true;
+        return;
+      }
+      emptyState.style.display = "none";
+
+      for (const album of comparisonResults) {
+        const li = document.createElement("li");
+        if (album.status === "present") li.classList.add("present");
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = album.status !== "present";
+        cb.disabled = album.status === "present";
+        cb.dataset.album = album.normalizedName;
+
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "album-name";
+        nameSpan.textContent = album.name;
+
+        const meta = document.createElement("span");
+        meta.className = "album-meta";
+        if (album.status === "incomplete") {
+          meta.textContent = `${album.targetCount}/${album.files.length} tracks`;
+        } else {
+          meta.textContent = `${album.files.length} track${album.files.length !== 1 ? "s" : ""}`;
+        }
+
+        const badge = document.createElement("span");
+        const badgeLabels = { missing: "Missing", incomplete: "Incomplete", present: "Present" };
+        badge.className = `badge ${album.status}`;
+        badge.textContent = badgeLabels[album.status];
+
+        li.append(cb, nameSpan, meta, badge);
+        albumListEl.appendChild(li);
+      }
+      updateSyncButton();
+    }
+
+    function getCheckedAlbums() {
+      const checked = new Set();
+      for (const cb of albumListEl.querySelectorAll("input[type=checkbox]:checked")) {
+        checked.add(cb.dataset.album);
+      }
+      return comparisonResults.filter((a) => checked.has(a.normalizedName));
+    }
+
+    function updateSyncButton() {
+      btnSync.disabled = getCheckedAlbums().length === 0;
+    }
+
+    albumListEl.addEventListener("change", updateSyncButton);
+
+    btnSelectAll.addEventListener("click", () => {
+      for (const cb of albumListEl.querySelectorAll("input[type=checkbox]:not(:disabled)")) {
+        cb.checked = true;
+      }
+      updateSyncButton();
+    });
+
+    btnSelectNone.addEventListener("click", () => {
+      for (const cb of albumListEl.querySelectorAll("input[type=checkbox]")) {
+        cb.checked = false;
+      }
+      updateSyncButton();
+    });
+
+    btnSource.addEventListener("click", async () => {
+      const handle = await pickFolder("source");
+      if (!handle) return;
+      sourceHandle = handle;
+      sourceName.textContent = handle.name;
+      sourceAlbums = await scanFolder(handle);
+      if (targetHandle) compare();
+    });
+
+    btnTarget.addEventListener("click", async () => {
+      const handle = await pickFolder("target");
+      if (!handle) return;
+      targetHandle = handle;
+      targetName.textContent = handle.name;
+      const targetAlbums = await scanFolder(handle);
+      targetAlbumCounts = new Map(targetAlbums.map((a) => [a.normalizedName, a.files.length]));
+      if (sourceHandle) compare();
+    });
+
+    // Sync logic
+    let coreURLBlob = null;
+    let wasmURLBlob = null;
+
+    async function prepareBlobURLs() {
+      if (!coreURLBlob) {
+        coreURLBlob = await toBlobURL("/ffmpeg/ffmpeg-core.js", "text/javascript");
+        wasmURLBlob = await toBlobURL("/ffmpeg/ffmpeg-core.wasm", "application/wasm");
+      }
+    }
+
+    function appendLog(text) {
+      syncLogContent.textContent += text + "\n";
+      syncLogContent.scrollTop = syncLogContent.scrollHeight;
+    }
+
+    async function createFFmpeg() {
+      const ff = new FFmpeg();
+      ff.on("log", ({ message }) => appendLog(message));
+      await ff.load({ coreURL: coreURLBlob, wasmURL: wasmURLBlob });
+      return ff;
+    }
+
+    function showProgress(text, fraction) {
+      progressArea.style.display = "block";
+      progressText.textContent = text;
+      progressBar.style.width = `${Math.round(fraction * 100)}%`;
+    }
+
+    function hideProgress() {
+      progressArea.style.display = "none";
+      progressBar.style.width = "0%";
+    }
+
+    btnSync.addEventListener("click", async () => {
+      const albums = getCheckedAlbums();
+      if (albums.length === 0) return;
+
+      btnSync.disabled = true;
+      btnSource.disabled = true;
+      btnTarget.disabled = true;
+
+      // Reset log and errors
+      syncLogContent.textContent = "";
+      syncLog.style.display = "block";
+      syncLog.open = false;
+      errorNotice.style.display = "none";
+      const errors = [];
+
+      // Count total files for progress
+      const totalFiles = albums.reduce((sum, a) => sum + a.files.length, 0);
+      let processedFiles = 0;
+      const hasFlac = albums.some((a) => a.files.some((f) => ext(f.name) === ".flac"));
+
+      if (hasFlac) {
+        showProgress("Loading ffmpeg...", 0);
+        await prepareBlobURLs();
+      }
+
+      for (const album of albums) {
+        const albumDir = await targetHandle.getDirectoryHandle(album.name, { create: true });
+        const albumHasFlac = album.files.some((f) => ext(f.name) === ".flac");
+
+        // Create a fresh ffmpeg instance per album to avoid memory buildup
+        let ffmpeg = null;
+        if (albumHasFlac) {
+          showProgress(`${album.name} — loading transcoder...`, processedFiles / totalFiles);
+          ffmpeg = await createFFmpeg();
+        }
+
+        for (const fileHandle of album.files) {
+          const file = await fileHandle.getFile();
+          const fileExt = ext(file.name);
+          showProgress(
+            `${album.name} — ${file.name}`,
+            processedFiles / totalFiles,
+          );
+
+          if (fileExt === ".flac") {
+            // Transcode FLAC → ALAC
+            const destName = file.name.replace(/\.flac$/i, ".m4a");
+            appendLog(`\n--- Transcoding: ${album.name}/${file.name} ---`);
+
+            await ffmpeg.writeFile("input.flac", new Uint8Array(await file.arrayBuffer()));
+            const ret = await ffmpeg.exec(["-i", "input.flac", "-map", "0:a", "-acodec", "alac", "output.m4a"]);
+
+            if (ret !== 0) {
+              errors.push(`${album.name}/${file.name}`);
+              appendLog(`ERROR: ffmpeg exited with code ${ret}`);
+              errorNotice.textContent = `${errors.length} file${errors.length > 1 ? "s" : ""} failed to transcode. Check the sync log for details.`;
+              errorNotice.style.display = "block";
+              // Clean up and skip
+              await ffmpeg.deleteFile("input.flac");
+              try { await ffmpeg.deleteFile("output.m4a"); } catch {}
+            } else {
+              const output = await ffmpeg.readFile("output.m4a");
+              appendLog(`OK: ${output.byteLength} bytes`);
+
+              const outHandle = await albumDir.getFileHandle(destName, { create: true });
+              const writable = await outHandle.createWritable();
+              await writable.write(output);
+              await writable.close();
+
+              await ffmpeg.deleteFile("input.flac");
+              await ffmpeg.deleteFile("output.m4a");
+            }
+          } else {
+            // Copy as-is
+            const outHandle = await albumDir.getFileHandle(file.name, { create: true });
+            const writable = await outHandle.createWritable();
+            await writable.write(await file.arrayBuffer());
+            await writable.close();
+          }
+
+          processedFiles++;
+          showProgress(
+            `${album.name} — ${file.name}`,
+            processedFiles / totalFiles,
+          );
+        }
+
+        // Terminate ffmpeg to free wasm memory
+        if (ffmpeg) ffmpeg.terminate();
+
+        // Update badge to synced
+        targetAlbumCounts.set(album.normalizedName, album.files.length);
+        const li = albumListEl.querySelector(
+          `input[data-album="${CSS.escape(album.normalizedName)}"]`,
+        )?.closest("li");
+        if (li) {
+          const badge = li.querySelector(".badge");
+          badge.className = "badge synced";
+          badge.textContent = "Synced";
+          const cb = li.querySelector("input");
+          cb.checked = false;
+          cb.disabled = true;
+          li.classList.add("present");
+        }
+      }
+
+      if (errors.length > 0) {
+        showProgress(`Done with ${errors.length} error${errors.length > 1 ? "s" : ""}`, 1);
+        syncLog.open = true;
+      } else {
+        showProgress("Done!", 1);
+        setTimeout(hideProgress, 3000);
+      }
+
+      btnSource.disabled = false;
+      btnTarget.disabled = false;
+      updateSyncButton();
+    });
+  </script>
+</body>
+</html>
