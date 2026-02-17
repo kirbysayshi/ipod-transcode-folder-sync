@@ -20,3 +20,5 @@ The app needs a custom ffmpeg.wasm build, otherwise larger inputs cause it to cr
 ```
 ./build-ffmpeg.sh
 ```
+
+NOTE: this requires Docker (I used `colima`). It failed with only 8GB of RAM when compiling. It was successful with 16GB.
