@@ -414,8 +414,9 @@
 
     async function prepareBlobURLs() {
       if (!coreURLBlob) {
-        coreURLBlob = await toBlobURL("/ffmpeg/ffmpeg-core.js", "text/javascript");
-        wasmURLBlob = await toBlobURL("/ffmpeg/ffmpeg-core.wasm", "application/wasm");
+        const base = new URL(".", document.baseURI).href;
+        coreURLBlob = await toBlobURL(`${base}ffmpeg/ffmpeg-core.js`, "text/javascript");
+        wasmURLBlob = await toBlobURL(`${base}ffmpeg/ffmpeg-core.wasm`, "application/wasm");
       }
     }
 

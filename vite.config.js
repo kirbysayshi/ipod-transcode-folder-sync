@@ -4,6 +4,7 @@ const headers = {
 };
 
 export default {
+  base: "./",
   optimizeDeps: {
     exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util"],
   },
