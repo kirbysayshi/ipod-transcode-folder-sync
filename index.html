@@ -264,12 +264,14 @@
     <h1>
       <details id="about">
         <summary>iPod Transcode &amp; Folder Sync</summary>
-        <p>
-          Compare a source music folder against a target (iPod) folder. Missing
-          child folders (albums) can be selected and synced, with FLAC files
-          transcoded to ALAC for bettery battery life on old iPods. Other
-          formats are copied as-is. Everything runs in the browser, no server
-          needed.
+        <p>Compare a source music folder against a target (iPod) folder. Missing
+        child folders (albums) can be selected and synced.</p>
+        <p>FLAC files are resampled to 44.1kHz and/or reduced to 16-bit when
+        needed to best fit the 4th gen iPod I own. Other formats are copied
+        nearly verbatim over, with the hope that the iPod can play it.</p>
+        <p>Embedded cover art in any format is scaled down to 128px, so will a
+        sidecar image. </p>
+        <p>Everything runs in the browser, no server needed.
         </p>
       </details>
     </h1>
@@ -326,6 +328,15 @@
         '.alac',
       ]);
 
+      const IMAGE_EXTS = new Set([
+        '.jpg',
+        '.jpeg',
+        '.png',
+        '.bmp',
+        '.gif',
+        '.webp',
+      ]);
+
       // State
       let sourceHandle = null;
       let targetHandle = null;
@@ -359,18 +370,138 @@
         return i >= 0 ? filename.slice(i).toLowerCase() : '';
       }
 
+      // --- Media inspection -------------------------------------------------
+      // Everything below reads the file bytes we already load for copying, so
+      // detection adds no extra I/O and lets conformant, art-less files skip
+      // ffmpeg entirely. iPod target: FLAC <=44.1kHz / <=16-bit, art <=128px.
+
+      const APIC = [0x41, 0x50, 0x49, 0x43]; // ID3v2 picture frame
+      const COVR = [0x63, 0x6f, 0x76, 0x72]; // MP4 cover-art atom
+
+      function indexOfBytes(hay, needle, start, end) {
+        end = Math.min(end, hay.length) - needle.length;
+        outer: for (let i = start; i <= end; i++) {
+          for (let j = 0; j < needle.length; j++) {
+            if (hay[i + j] !== needle[j]) continue outer;
+          }
+          return i;
+        }
+        return -1;
+      }
+
+      // Parse FLAC STREAMINFO + scan metadata blocks for an embedded picture.
+      function readFlacInfo(buf) {
+        const v = new DataView(buf);
+        if (v.byteLength < 8 || v.getUint32(0) !== 0x664c6143) return null; // 'fLaC'
+        let off = 4;
+        let sampleRate = 0,
+          bitsPerSample = 0,
+          hasPicture = false;
+        while (off + 4 <= v.byteLength) {
+          const header = v.getUint8(off);
+          const isLast = (header & 0x80) !== 0;
+          const type = header & 0x7f;
+          const len =
+            (v.getUint8(off + 1) << 16) |
+            (v.getUint8(off + 2) << 8) |
+            v.getUint8(off + 3);
+          const body = off + 4;
+          if (type === 0) {
+            // STREAMINFO: sample rate (20 bits) + bps (5 bits) start at body+10
+            const b = body + 10;
+            sampleRate =
+              (v.getUint8(b) << 12) |
+              (v.getUint8(b + 1) << 4) |
+              (v.getUint8(b + 2) >> 4);
+            bitsPerSample =
+              (((v.getUint8(b + 2) & 0x01) << 4) | (v.getUint8(b + 3) >> 4)) + 1;
+          } else if (type === 6) {
+            hasPicture = true;
+          }
+          if (isLast) break;
+          off = body + len;
+        }
+        return { sampleRate, bitsPerSample, hasPicture };
+      }
+
+      function hasMp3Apic(buf) {
+        const v = new Uint8Array(buf);
+        if (v.length < 10 || v[0] !== 0x49 || v[1] !== 0x44 || v[2] !== 0x33)
+          return false; // 'ID3'
+        // synchsafe 4-byte tag size (7 bits per byte)
+        const size = (v[6] << 21) | (v[7] << 14) | (v[8] << 7) | v[9];
+        return indexOfBytes(v, APIC, 10, 10 + size) !== -1;
+      }
+
+      function hasMp4Covr(buf) {
+        const v = new Uint8Array(buf);
+        return indexOfBytes(v, COVR, 0, v.length) !== -1;
+      }
+
+      // Pick the best sidecar cover from an album's images, by name priority.
+      function pickCover(images, albumName) {
+        if (!images.length) return null;
+        const album = normalize(albumName);
+        const rank = (h) => {
+          const n = h.name;
+          const base = n.slice(0, n.lastIndexOf('.')).toLowerCase();
+          if (base === 'cover') return 0;
+          if (base === 'folder') return 1;
+          if (base === 'front') return 2;
+          if (base === album) return 3;
+          return 4;
+        };
+        return [...images].sort((a, b) => rank(a) - rank(b))[0];
+      }
+
+      // Decode + downscale (longest side <= maxDim) to a JPEG blob, via canvas.
+      // No upscaling. Rockbox reads this as cover.jpg in the album folder.
+      async function makeCoverJpg(file, maxDim) {
+        const bmp = await createImageBitmap(file);
+        const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+        const w = Math.max(1, Math.round(bmp.width * scale));
+        const h = Math.max(1, Math.round(bmp.height * scale));
+        const canvas = new OffscreenCanvas(w, h);
+        canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+        bmp.close?.();
+        return canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+      }
+
+      // Returns { needsResample, needsBitReduce, hasPicture } for routing.
+      function getMediaInfo(name, buf) {
+        const e = ext(name);
+        let needsResample = false,
+          needsBitReduce = false,
+          hasPicture = false;
+        if (e === '.flac') {
+          const info = readFlacInfo(buf);
+          if (info) {
+            needsResample = info.sampleRate > 44100;
+            needsBitReduce = info.bitsPerSample > 16;
+            hasPicture = info.hasPicture;
+          }
+        } else if (e === '.mp3') {
+          hasPicture = hasMp3Apic(buf);
+        } else if (e === '.m4a' || e === '.aac' || e === '.alac') {
+          hasPicture = hasMp4Covr(buf);
+        }
+        return { needsResample, needsBitReduce, hasPicture };
+      }
+
       async function scanFolder(dirHandle) {
         const albums = [];
         for await (const [name, handle] of dirHandle.entries()) {
           if (handle.kind !== 'directory') continue;
           const files = [];
+          const images = [];
           for await (const [fname, fhandle] of handle.entries()) {
-            if (fhandle.kind === 'file' && AUDIO_EXTS.has(ext(fname))) {
-              files.push(fhandle);
-            }
+            if (fhandle.kind !== 'file') continue;
+            const e = ext(fname);
+            if (AUDIO_EXTS.has(e)) files.push(fhandle);
+            else if (IMAGE_EXTS.has(e)) images.push(fhandle);
           }
           if (files.length > 0) {
-            albums.push({ name, normalizedName: normalize(name), files });
+            albums.push({ name, normalizedName: normalize(name), files, images });
           }
         }
         albums.sort((a, b) => a.name.localeCompare(b.name));
@@ -600,97 +731,97 @@
         // Count total files for progress
         const totalFiles = albums.reduce((sum, a) => sum + a.files.length, 0);
         let processedFiles = 0;
-        const hasFlac = albums.some((a) =>
-          a.files.some((f) => ext(f.name) === '.flac'),
-        );
-
-        if (hasFlac) {
-          showProgress('Loading ffmpeg...', 0);
-          await prepareBlobURLs();
-        }
 
         for (const album of albums) {
           const albumDir = await targetHandle.getDirectoryHandle(album.name, {
             create: true,
           });
-          const albumHasFlac = album.files.some((f) => ext(f.name) === '.flac');
 
-          // Create a fresh ffmpeg instance per album to avoid memory buildup
+          // Fresh ffmpeg instance per album (memory), created lazily on the
+          // first file that actually needs transcoding or art processing.
           let ffmpeg = null;
-          if (albumHasFlac) {
-            showProgress(
-              `${album.name} — loading transcoder...`,
-              processedFiles / totalFiles,
-            );
-            ffmpeg = await createFFmpeg();
-          }
 
           for (const fileHandle of album.files) {
             const file = await fileHandle.getFile();
             const fileExt = ext(file.name);
+            const buf = await file.arrayBuffer();
+            const info = getMediaInfo(file.name, buf);
+            const needsAudio = info.needsResample || info.needsBitReduce;
+            const needsFfmpeg = needsAudio || info.hasPicture;
             showProgress(
               `${album.name} — ${file.name}`,
               processedFiles / totalFiles,
             );
 
-            if (fileExt === '.flac') {
-              // Transcode FLAC → ALAC
-              const destName = file.name.replace(/\.flac$/i, '.m4a');
-              appendLog(`\n--- Transcoding: ${album.name}/${file.name} ---`);
+            if (needsFfmpeg) {
+              // FLAC → conformant FLAC (resample/16-bit as needed); art on any
+              // format scaled down to <=128px. Audio copied when already ok.
+              const inName = 'input' + fileExt;
+              const outName = 'output' + fileExt;
+              appendLog(`\n--- Processing: ${album.name}/${file.name} ---`);
 
-              await ffmpeg.writeFile(
-                'input.flac',
-                new Uint8Array(await file.arrayBuffer()),
-              );
-              const ret = await ffmpeg.exec([
-                '-i',
-                'input.flac',
-                '-map',
-                '0:a',
-                '-map',
-                '0:v?',
-                '-acodec',
-                'alac',
-                '-c:v',
-                'copy',
-                '-disposition:v',
-                'attached_pic',
-                '-map_metadata',
-                '0',
-                'output.m4a',
-              ]);
+              if (!ffmpeg) {
+                showProgress(
+                  `${album.name} — loading transcoder...`,
+                  processedFiles / totalFiles,
+                );
+                await prepareBlobURLs();
+                ffmpeg = await createFFmpeg();
+              }
+
+              await ffmpeg.writeFile(inName, new Uint8Array(buf));
+              const args = ['-i', inName, '-map', '0:a', '-map', '0:v?'];
+              if (fileExt === '.flac' && needsAudio) {
+                // swresample auto-applies triangular dither on the 24→16 step.
+                args.push('-c:a', 'flac');
+                if (info.needsResample) args.push('-ar', '44100');
+                if (info.needsBitReduce) args.push('-sample_fmt', 's16');
+              } else {
+                args.push('-c:a', 'copy');
+              }
+              if (info.hasPicture) {
+                args.push(
+                  '-c:v',
+                  'mjpeg',
+                  '-filter:v',
+                  'scale=128:128:force_original_aspect_ratio=decrease',
+                  '-disposition:v',
+                  'attached_pic',
+                );
+              }
+              args.push('-map_metadata', '0', outName);
+              const ret = await ffmpeg.exec(args);
 
               if (ret !== 0) {
                 errors.push(`${album.name}/${file.name}`);
                 appendLog(`ERROR: ffmpeg exited with code ${ret}`);
-                errorNotice.textContent = `${errors.length} file${errors.length > 1 ? 's' : ''} failed to transcode. Check the sync log for details.`;
+                errorNotice.textContent = `${errors.length} file${errors.length > 1 ? 's' : ''} failed to process. Check the sync log for details.`;
                 errorNotice.style.display = 'block';
-                // Clean up and skip
-                await ffmpeg.deleteFile('input.flac');
+                await ffmpeg.deleteFile(inName);
                 try {
-                  await ffmpeg.deleteFile('output.m4a');
+                  await ffmpeg.deleteFile(outName);
                 } catch {}
               } else {
-                const output = await ffmpeg.readFile('output.m4a');
+                const output = await ffmpeg.readFile(outName);
                 appendLog(`OK: ${output.byteLength} bytes`);
 
-                const outHandle = await albumDir.getFileHandle(destName, {
+                const outHandle = await albumDir.getFileHandle(file.name, {
                   create: true,
                 });
                 const writable = await outHandle.createWritable();
                 await writable.write(output);
                 await writable.close();
 
-                await ffmpeg.deleteFile('input.flac');
-                await ffmpeg.deleteFile('output.m4a');
+                await ffmpeg.deleteFile(inName);
+                await ffmpeg.deleteFile(outName);
               }
             } else {
-              // Copy as-is
+              // Already iPod-conformant with no art: copy bytes verbatim.
               const outHandle = await albumDir.getFileHandle(file.name, {
                 create: true,
               });
               const writable = await outHandle.createWritable();
-              await writable.write(await file.arrayBuffer());
+              await writable.write(buf);
               await writable.close();
             }
 
@@ -703,6 +834,23 @@
 
           // Terminate ffmpeg to free wasm memory
           if (ffmpeg) ffmpeg.terminate();
+
+          // Sidecar cover art → downscaled cover.jpg for Rockbox.
+          const coverSrc = pickCover(album.images, album.name);
+          if (coverSrc) {
+            try {
+              const blob = await makeCoverJpg(await coverSrc.getFile(), 128);
+              const coverHandle = await albumDir.getFileHandle('cover.jpg', {
+                create: true,
+              });
+              const writable = await coverHandle.createWritable();
+              await writable.write(blob);
+              await writable.close();
+              appendLog(`cover: ${coverSrc.name} → cover.jpg (${blob.size} bytes)`);
+            } catch (e) {
+              appendLog(`cover ERROR (${coverSrc.name}): ${e.message}`);
+            }
+          }
 
           // Update badge to synced
           targetAlbumCounts.set(album.normalizedName, album.files.length);
