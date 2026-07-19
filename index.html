@@ -72,6 +72,10 @@
         min-height: 1.2em;
       }
 
+      .folder-picker .folder-name.scan-error {
+        color: #984c0c;
+      }
+
       .actions {
         display: flex;
         align-items: center;
@@ -234,6 +238,34 @@
         font-size: 0.9rem;
       }
 
+      #hidden-files-note {
+        margin-top: 24px;
+        display: none;
+        font-size: 0.85rem;
+        color: #6e6e73;
+        line-height: 1.5;
+      }
+
+      #hidden-files-note summary {
+        cursor: pointer;
+        padding: 8px 0;
+      }
+
+      #hidden-files-note p {
+        margin: 8px 0;
+      }
+
+      #hidden-files-note code {
+        background: #f0f0f2;
+        border-radius: 4px;
+        padding: 1px 4px;
+        font-size: 0.9em;
+      }
+
+      #hidden-files-note ul {
+        margin-left: 16px;
+      }
+
       #sync-log {
         margin-top: 16px;
         display: none;
@@ -259,7 +291,7 @@
         word-break: break-all;
       }
     </style>
-    <script type="module" crossorigin src="./assets/index-CLkck4bz.js"></script>
+    <script type="module" crossorigin src="./assets/index-BB_Bf9ah.js"></script>
   </head>
   <body>
     <h1>
@@ -310,8 +342,33 @@
       Select source and target folders to compare.
     </div>
 
+    <details id="hidden-files-note">
+      <summary>Missing files?</summary>
+      <div>
+        <p>Check the file and folder names. Chrome excludes paths containing strings it considers
+          unsafe, outside of the <a href="https://fs.spec.whatwg.org/">File System Spec</a>.</p>
+        <p>Examples include
+          <code>&quot; * / : &lt; &gt; ? \ |</code> and
+          invisible control and formatting characters.
+          Also leading/trailing whitespace, <code>.</code> or <code>~</code>.</p>
+        <p>The iPod's FAT32 filesystem forbids most of the same characters too, so a rename is required.</p>
+
+        <p>Chromium sources:</p>
+          <ul>
+            <li><a href="https://source.chromium.org/chromium/chromium/src/+/main:content/browser/file_system_access/file_system_access_directory_handle_impl.cc"
+          >file_system_access_directory_handle_impl.cc</a> (<code>DidReadDirectory</code> skips unsafe entries)</li>
+            <li><a href="https://source.chromium.org/chromium/chromium/src/+/main:content/browser/file_system_access/file_system_access_manager_impl.cc"
+          >file_system_access_manager_impl.cc</a>
+        (<code>IsSafePathComponent</code>)</li>
+            <li><a href="https://source.chromium.org/chromium/chromium/src/+/main:base/i18n/file_util_icu.cc"
+          >file_util_icu.cc</a> (<code>IsFilenameLegal</code> and the illegal
+        character set)</li>
+          </ul>
+      </div>
+    </details>
+
     <details id="sync-log">
-      <summary>Sync log</summary>
+      <summary>Log</summary>
       <pre id="sync-log-content"></pre>
     </details>
 
